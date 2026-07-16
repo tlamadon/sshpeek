@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+# personal config stays out of the repo; sshpeek.example.yaml is tracked
+sshpeek.yaml

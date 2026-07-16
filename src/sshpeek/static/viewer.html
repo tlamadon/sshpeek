@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sshpeek · pdf</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #E7E9E3;
+    --bar: #FFFFFF;
+    --ink: #23282D;
+    --muted: #7A8078;
+    --line: #DFE3DB;
+    --accent: #0E7568;
+    --ok: #2F9E44;
+    --down: #C92A2A;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); font-family: var(--mono); }
+
+  header {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    background: var(--bar); border-bottom: 1px solid var(--line);
+    padding: 8px 16px; font-size: 13px; color: var(--ink);
+  }
+  .fname { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hostchip {
+    font-size: 11.5px; color: var(--accent); background: #E3F0EC;
+    border-radius: 999px; padding: 1px 9px; flex: none;
+  }
+  .spacer { flex: 1; }
+  #meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #status { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  #status.on { background: var(--ok); }
+  #status.off { background: var(--down); }
+  @media (prefers-reduced-motion: no-preference) {
+    #status.off { animation: pulse 1.2s infinite; }
+    @keyframes pulse { 50% { opacity: 0.3; } }
+  }
+
+  #scroll { flex: 1; overflow: auto; }
+  .pageset { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 0 40px; }
+  .pageset canvas { background: #fff; box-shadow: 0 1px 4px rgba(35,40,45,0.18); }
+  .note { color: var(--muted); font-size: 13px; padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <span id="status" title="watching"></span>
+  <span class="fname" id="fname"></span>
+  <span class="hostchip" id="hostchip"></span>
+  <span class="spacer"></span>
+  <span id="meta"></span>
+</header>
+<div id="scroll"><div class="pageset"><div class="note">loading…</div></div></div>
+
+<script type="module">
+import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs";
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.mjs";
+
+const qs = new URLSearchParams(location.search);
+const host = qs.get("host"), path = qs.get("path");
+const scroll = document.getElementById("scroll");
+const meta = document.getElementById("meta");
+const status = document.getElementById("status");
+
+const base = path.split("/").pop();
+document.title = base + " — sshpeek";
+document.getElementById("fname").textContent = base;
+document.getElementById("fname").title = path;
+document.getElementById("hostchip").textContent = host;
+
+let rendering = false, queued = null;
+
+async function render(version) {
+  if (rendering) { queued = version; return; }
+  rendering = true;
+  try {
+    const url = "/api/file?" + new URLSearchParams({ host, path, v: version });
+    const doc = await pdfjsLib.getDocument(url).promise;
+
+    // Render every page into a fresh container, then swap it in: no white
+    // flash, and the scroll offset carries over.
+    const next = document.createElement("div");
+    next.className = "pageset";
+    const width = Math.min(scroll.clientWidth - 36, 1000);
+    const dpr = window.devicePixelRatio || 1;
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const v1 = page.getViewport({ scale: 1 });
+      const scale = width / v1.width;
+      const vp = page.getViewport({ scale: scale * dpr });
+      const c = document.createElement("canvas");
+      c.width = vp.width; c.height = vp.height;
+      c.style.width = (vp.width / dpr) + "px";
+      c.style.height = (vp.height / dpr) + "px";
+      await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+      next.appendChild(c);
+    }
+
+    const y = scroll.scrollTop;
+    document.querySelector(".pageset").replaceWith(next);
+    scroll.scrollTop = y;
+    meta.textContent = doc.numPages + " pages · updated " +
+      new Date().toLocaleTimeString();
+  } catch (e) {
+    // Keep the last good render; a half-written or unreadable file just
+    // reports itself in the header and we wait for the next change event.
+    meta.textContent = "refresh failed: " + (e.message || e);
+  } finally {
+    rendering = false;
+    if (queued !== null) { const v = queued; queued = null; render(v); }
+  }
+}
+
+const es = new EventSource("/api/events?" + new URLSearchParams({ host, path }));
+es.onopen = () => { status.className = "on"; status.title = "watching"; };
+es.onerror = () => { status.className = "off"; status.title = "reconnecting…"; };
+es.onmessage = (e) => {
+  const d = JSON.parse(e.data);
+  render(d.mtime + "-" + (d.size || 0));
+};
+
+let resizeT;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => render("resize-" + Date.now()), 300);
+});
+</script>
+</body>
+</html>

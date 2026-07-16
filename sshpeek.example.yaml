@@ -1,0 +1,30 @@
+# sshpeek configuration -- copy to ./sshpeek.yaml or ~/.config/sshpeek/sshpeek.yaml
+# Every host name is a plain ~/.ssh/config alias; keys, jump hosts, and
+# agents all come from your normal SSH setup.
+
+listen:
+  host: 127.0.0.1
+  port: 8642
+
+hosts:
+  mercury:
+    # Raw TCP binds on 127.0.0.1 of this machine.
+    tunnels:
+      - 5432                      # 127.0.0.1:5432  -> mercury localhost:5432
+      - local: 18888
+        remote: localhost:8888    # 127.0.0.1:18888 -> mercury localhost:8888
+      - remote: db.internal:5432  # via mercury; local defaults to remote port
+
+    # Named HTTP services, reverse-proxied by sshpeek itself. Each one gets a
+    # stable URL that browsers resolve without any /etc/hosts edits:
+    #   http://jupyter.mercury.localhost:8642/
+    #   http://mlflow.mercury.localhost:8642/
+    http:
+      jupyter: 8888
+      mlflow: localhost:5000
+
+  homebox:
+    http:
+      grafana: 3000
+
+  internultra:      # no tunnels or services: just a host chip for browsing

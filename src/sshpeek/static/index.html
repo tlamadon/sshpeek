@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sshpeek</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #F2F3EF;
+    --panel: #FFFFFF;
+    --ink: #23282D;
+    --muted: #7A8078;
+    --line: #DFE3DB;
+    --accent: #0E7568;
+    --accent-soft: #E3F0EC;
+    --ok: #2F9E44;
+    --down: #C92A2A;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); font-size: 14px; line-height: 1.45;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header {
+    display: flex; align-items: baseline; gap: 14px;
+    padding: 14px 22px 12px; border-bottom: 1px solid var(--line);
+  }
+  .wordmark { font-family: var(--mono); font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+  .wordmark .ee { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 12.5px; }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 22px 60px; }
+
+  /* host bar */
+  #hostbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .chip {
+    font-family: var(--mono); font-size: 13px; padding: 4px 12px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 7px;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.on { background: var(--ok); }
+  .chip.active .dot.on { background: #B8E6C4; }
+  #hostform { display: inline-flex; gap: 6px; }
+  input, button {
+    font-family: var(--mono); font-size: 13px; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+    padding: 4px 10px;
+  }
+  input:focus, button:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); color: #fff; }
+
+  /* columns */
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .panel h2 {
+    margin: 0; padding: 10px 16px; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* file browser */
+  #crumbs {
+    font-family: var(--mono); font-size: 13px; padding: 10px 16px;
+    border-bottom: 1px dotted var(--line); overflow-x: auto; white-space: nowrap;
+  }
+  #crumbs a { color: var(--ink); }
+  #crumbs a:hover { color: var(--accent); }
+  #crumbs .sep { color: var(--muted); margin: 0 2px; }
+  #crumbs .here { color: var(--accent); font-weight: 600; }
+
+  #listing { list-style: none; margin: 0; padding: 6px 8px 10px; }
+  #listing li {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 3px 8px; border-radius: 6px; font-family: var(--mono); font-size: 13px;
+  }
+  #listing li:hover { background: var(--accent-soft); }
+  .fname { cursor: pointer; }
+  .fname.dir { color: var(--accent); font-weight: 600; }
+  .fname:hover { text-decoration: underline; }
+  .leader { flex: 1; border-bottom: 1px dotted var(--line); transform: translateY(-4px); min-width: 20px; }
+  .fsize { color: var(--muted); font-size: 12px; min-width: 62px; text-align: right; }
+  .fdate { color: var(--muted); font-size: 12px; min-width: 118px; text-align: right; }
+  .facts { min-width: 58px; text-align: right; font-size: 12px; }
+  .facts a { margin-left: 6px; }
+  .empty { color: var(--muted); padding: 18px 16px; font-size: 13px; }
+
+  /* patch bay */
+  .rightcol { display: flex; flex-direction: column; gap: 18px; }
+  #fwlist, #svclist { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .fw {
+    font-family: var(--mono); font-size: 12.5px;
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .fw .jack { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+  .fw.down .jack { background: var(--down); }
+  .fw .route { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fw .arrow { color: var(--muted); }
+  .fw .pin { color: var(--muted); font-size: 11px; flex: none; }
+  .fw .target { display: block; color: var(--muted); font-size: 11px; }
+  .fw button { padding: 1px 7px; font-size: 12px; }
+  #fwform { display: flex; gap: 6px; padding: 0 12px 12px; }
+  #fwform input[name=fhost] { width: 30%; }
+  #fwform input[name=fport] { width: 22%; }
+  #fwform input[name=flocal] { width: 22%; }
+  #fwform button { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; padding: 0 16px 12px; }
+
+  #msg {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: #fff; font-family: var(--mono); font-size: 13px;
+    padding: 8px 16px; border-radius: 8px; display: none; max-width: 80vw;
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">sshp<span class="ee">ee</span>k</span>
+  <span class="tagline">files &amp; ports over ssh</span>
+</header>
+
+<main>
+  <div id="hostbar">
+    <span id="chips"></span>
+    <form id="hostform">
+      <input name="h" placeholder="ssh host alias" autocomplete="off" spellcheck="false">
+      <button type="submit">browse</button>
+    </form>
+  </div>
+
+  <div class="cols">
+    <section class="panel" id="files">
+      <h2>Files</h2>
+      <div id="crumbs"></div>
+      <ul id="listing"><li class="empty">Pick a host to start browsing. Anything that works with plain <code>ssh &lt;host&gt;</code> works here.</li></ul>
+    </section>
+
+    <div class="rightcol">
+    <section class="panel" id="svcpanel" style="display:none">
+      <h2>Services</h2>
+      <ul id="svclist"></ul>
+    </section>
+
+    <section class="panel" id="forwards">
+      <h2>Tunnels</h2>
+      <ul id="fwlist"><li class="empty">No tunnels yet.</li></ul>
+      <form id="fwform">
+        <input name="fhost" placeholder="host" autocomplete="off" spellcheck="false">
+        <input name="fport" placeholder="port" inputmode="numeric" autocomplete="off">
+        <input name="flocal" placeholder="local" inputmode="numeric" autocomplete="off" title="local port (optional)">
+        <button type="submit" class="primary">open</button>
+      </form>
+      <div class="hint">Tunnels bind on 127.0.0.1 of this machine — click one to open it. Pinned entries come from sshpeek.yaml.</div>
+    </section>
+    </div>
+  </div>
+</main>
+
+<div id="msg" role="status"></div>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const state = { host: null, path: null };
+
+/* ---------- helpers ---------- */
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  let data = null;
+  try { data = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error((data && data.error) || (r.status + " " + r.statusText));
+  return data;
+}
+function toast(text) {
+  const m = $("#msg");
+  m.textContent = text;
+  m.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { m.style.display = "none"; }, 5000);
+}
+function fmtSize(n) {
+  if (n == null) return "";
+  if (n < 1024) return n + " B";
+  const u = ["KB", "MB", "GB", "TB"];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return n.toFixed(n >= 100 ? 0 : 1) + " " + u[i];
+}
+function fmtDate(t) {
+  if (t == null) return "";
+  const d = new Date(t * 1000);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+    " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+function q(params) { return new URLSearchParams(params).toString(); }
+function setHash() {
+  location.hash = q({ h: state.host || "", p: state.path || "" });
+}
+function readHash() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  return { h: p.get("h") || null, p: p.get("p") || null };
+}
+
+/* ---------- hosts ---------- */
+async function loadHosts() {
+  try {
+    const hosts = await api("/api/hosts");
+    const box = $("#chips");
+    box.innerHTML = "";
+    for (const h of hosts) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip" + (h.name === state.host ? " active" : "");
+      b.innerHTML = `<span class="dot ${h.connected ? "on" : ""}"></span>` + h.name;
+      b.onclick = () => browse(h.name, null);
+      box.appendChild(b);
+    }
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- file browser ---------- */
+async function browse(host, path) {
+  $("#listing").innerHTML = '<li class="empty">Connecting to ' + host + "…</li>";
+  try {
+    const data = await api("/api/ls?" + q({ host, path: path || "" }));
+    state.host = data.host;
+    state.path = data.path;
+    setHash();
+    renderCrumbs(data.path);
+    renderListing(data);
+    if (!$("#fwform [name=fhost]").value) $("#fwform [name=fhost]").value = host;
+    loadHosts();
+  } catch (e) {
+    $("#listing").innerHTML = '<li class="empty">' + e.message + "</li>";
+    toast(host + ": " + e.message);
+  }
+}
+function renderCrumbs(path) {
+  const parts = path.split("/").filter(Boolean);
+  const c = $("#crumbs");
+  c.innerHTML = "";
+  const root = document.createElement("a");
+  root.href = "#"; root.textContent = "/";
+  root.onclick = (e) => { e.preventDefault(); browse(state.host, "/"); };
+  c.appendChild(root);
+  let acc = "";
+  parts.forEach((part, i) => {
+    acc += "/" + part;
+    const target = acc;
+    if (i === parts.length - 1) {
+      const s = document.createElement("span");
+      s.className = "here"; s.textContent = part;
+      c.appendChild(s);
+    } else {
+      const a = document.createElement("a");
+      a.href = "#"; a.textContent = part;
+      a.onclick = (e) => { e.preventDefault(); browse(state.host, target); };
+      c.appendChild(a);
+      const sep = document.createElement("span");
+      sep.className = "sep"; sep.textContent = "/";
+      c.appendChild(sep);
+    }
+  });
+}
+function renderListing(data) {
+  const ul = $("#listing");
+  ul.innerHTML = "";
+  if (data.path !== "/") {
+    const up = document.createElement("li");
+    const a = document.createElement("span");
+    a.className = "fname dir"; a.textContent = "..";
+    a.onclick = () => browse(state.host, data.path.replace(/\/[^/]+$/, "") || "/");
+    up.appendChild(a);
+    ul.appendChild(up);
+  }
+  if (!data.entries.length) {
+    ul.innerHTML += '<li class="empty">Empty directory.</li>';
+    return;
+  }
+  for (const e of data.entries) {
+    const li = document.createElement("li");
+    const full = (data.path === "/" ? "" : data.path) + "/" + e.name;
+    const name = document.createElement("span");
+    name.className = "fname" + (e.dir ? " dir" : "");
+    name.textContent = e.name + (e.dir ? "/" : "");
+    name.onclick = () => {
+      if (e.dir) return browse(state.host, full);
+      if (/\.pdf$/i.test(e.name)) {
+        window.open("/view?" + q({ host: state.host, path: full }), "_blank");
+      } else {
+        window.open("/api/file?" + q({ host: state.host, path: full }), "_blank");
+      }
+    };
+    li.appendChild(name);
+    const leader = document.createElement("span");
+    leader.className = "leader";
+    li.appendChild(leader);
+    if (!e.dir) {
+      const acts = document.createElement("span");
+      acts.className = "facts";
+      if (/\.pdf$/i.test(e.name)) {
+        const live = document.createElement("a");
+        live.href = "/view?" + q({ host: state.host, path: full });
+        live.target = "_blank"; live.title = "live view (auto-refresh)";
+        live.textContent = "live";
+        acts.appendChild(live);
+      }
+      const dl = document.createElement("a");
+      dl.href = "/api/file?" + q({ host: state.host, path: full, dl: 1 });
+      dl.title = "download"; dl.textContent = "↓";
+      acts.appendChild(dl);
+      li.appendChild(acts);
+    }
+    const size = document.createElement("span");
+    size.className = "fsize"; size.textContent = e.dir ? "" : fmtSize(e.size);
+    li.appendChild(size);
+    const date = document.createElement("span");
+    date.className = "fdate"; date.textContent = fmtDate(e.mtime);
+    li.appendChild(date);
+    ul.appendChild(li);
+  }
+}
+
+/* ---------- services & tunnels ---------- */
+async function loadServices() {
+  try {
+    const svcs = await api("/api/services");
+    const panel = $("#svcpanel"), ul = $("#svclist");
+    if (!svcs.length) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    ul.innerHTML = "";
+    for (const s of svcs) {
+      const li = document.createElement("li");
+      li.className = "fw" + (s.up ? "" : " down");
+      li.innerHTML =
+        `<span class="jack" title="${s.up ? "up" : "connecting…"}"></span>` +
+        `<span class="route"><a href="${s.url}" target="_blank">${s.name}.${s.host}</a>` +
+        `<span class="target">${s.host} → ${s.target}</span></span>`;
+      ul.appendChild(li);
+    }
+  } catch (e) { toast(e.message); }
+}
+
+async function loadForwards() {
+  try {
+    const fws = await api("/api/forwards");
+    const ul = $("#fwlist");
+    ul.innerHTML = "";
+    if (!fws.length) {
+      ul.innerHTML = '<li class="empty">No tunnels yet.</li>';
+      return;
+    }
+    for (const f of fws) {
+      const li = document.createElement("li");
+      li.className = "fw" + (f.up ? "" : " down");
+      const target = f.remote_host === "localhost" ? ":" + f.remote_port
+        : f.remote_host + ":" + f.remote_port;
+      li.innerHTML =
+        `<span class="jack" title="${f.up ? "up" : "connection down"}"></span>` +
+        `<span class="route">${f.host} ${target} <span class="arrow">⇢</span> ` +
+        (f.local_port
+          ? `<a href="http://127.0.0.1:${f.local_port}" target="_blank">127.0.0.1:${f.local_port}</a>`
+          : "—") +
+        `</span>`;
+      if (f.declared) {
+        const pin = document.createElement("span");
+        pin.className = "pin"; pin.textContent = "⚲ pinned";
+        pin.title = "declared in sshpeek.yaml";
+        li.appendChild(pin);
+      } else {
+        const del = document.createElement("button");
+        del.type = "button"; del.textContent = "✕"; del.title = "remove tunnel";
+        del.onclick = async () => {
+          try {
+            await api("/api/forwards/" + encodeURIComponent(f.id), { method: "DELETE" });
+            loadForwards();
+          } catch (e) { toast(e.message); }
+        };
+        li.appendChild(del);
+      }
+      ul.appendChild(li);
+    }
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- wiring ---------- */
+$("#hostform").onsubmit = (e) => {
+  e.preventDefault();
+  const h = e.target.h.value.trim();
+  if (h) browse(h, null);
+};
+$("#fwform").onsubmit = async (e) => {
+  e.preventDefault();
+  const host = e.target.fhost.value.trim();
+  const port = parseInt(e.target.fport.value, 10);
+  const local = parseInt(e.target.flocal.value, 10) || 0;
+  if (!host || !port) return toast("need a host and a port");
+  try {
+    await api("/api/forwards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, port, local }),
+    });
+    e.target.fport.value = ""; e.target.flocal.value = "";
+    loadForwards();
+    loadHosts();
+  } catch (err) { toast(err.message); }
+};
+window.addEventListener("hashchange", () => {
+  const h = readHash();
+  if (h.h && (h.h !== state.host || h.p !== state.path)) browse(h.h, h.p);
+});
+
+loadHosts();
+loadForwards();
+loadServices();
+setInterval(() => { loadForwards(); loadServices(); }, 15000);
+const init = readHash();
+if (init.h) browse(init.h, init.p);
+</script>
+</body>
+</html>
