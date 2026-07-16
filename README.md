@@ -1,9 +1,9 @@
 # sshpeek
 
 A small local web UI for peeking at remote machines over SSH: browse and view
-files, live-view PDFs that auto-refresh when they change remotely (remote
-LaTeX builds), open port tunnels, and reach named remote web apps at stable
-`*.localhost` URLs.
+files, live-view PDFs and images that auto-refresh when they change remotely
+(remote LaTeX builds, plotting pipelines), open port tunnels, reach named
+remote web apps at stable `*.localhost` URLs, and browse S3 buckets alongside.
 
 One multiplexed SSH connection per host, kept alive in the background.
 Everything that works with plain `ssh <host>` works here: hosts, keys,
@@ -12,7 +12,8 @@ ProxyJump, agents all come from `~/.ssh/config` and your ssh-agent.
 ## Quickstart
 
 ```sh
-uv tool install --from . sshpeek     # or: pip install -e .
+pip install sshpeek              # or: uv tool install sshpeek
+pip install 'sshpeek[s3]'        # with S3 support
 sshpeek                          # → http://127.0.0.1:8642
 ```
 
@@ -39,6 +40,13 @@ hosts:
     http:
       grafana: 3000
   internultra:                    # just a host chip for browsing
+
+s3:
+  data: my-bucket                 # chip "data" -> bucket "my-bucket"
+  results:
+    bucket: my-results-bucket
+    prefix: runs/                 # browse only under this key prefix
+    profile: work                 # ~/.aws profile; SSO works too
 ```
 
 Declared tunnels and services are established at startup and re-ensured
@@ -48,11 +56,19 @@ every 20s, so they self-heal after connection drops or laptop sleep
 ## What it does
 
 - **Files** — browse remote directories (sftp over the shared connection),
-  view text/logs/PDFs inline, download anything.
-- **Live PDF view** — the `live` link next to any PDF opens a viewer that
-  watches the file over SSE and re-renders when it changes, keeping your
-  scroll position. Refreshes are debounced until the file size is stable
-  across two polls, so a `latexmk` mid-write never renders garbage.
+  view text/logs/PDFs inline, download anything. File-type icons, and a
+  toggle for dotfiles (hidden by default).
+- **Live views** — the `live` link next to any PDF or image opens a viewer
+  that watches the file over SSE and re-renders when it changes, keeping
+  your scroll position. PDF hyperlinks (URLs, citations, TOC) are clickable.
+  Refreshes are debounced until the file size is stable across two polls,
+  so a `latexmk` mid-write never renders garbage. A "Live views" panel
+  lists every open view and can detach one remotely — its tab closes
+  itself, handy for trimming after a long session.
+- **S3 sources** — buckets declared under `s3:` appear next to the SSH
+  hosts: same browsing, peeking, downloads and live views, with keys
+  presented as paths. Credentials use the normal boto3 chain (env vars,
+  profiles, SSO). Optional: `pip install 'sshpeek[s3]'`.
 - **Tunnels** — raw TCP binds on `127.0.0.1` to any remote port through the
   SSH connection: databases, dashboards, anything. Declared in YAML (pinned)
   or opened ad hoc from the UI.
@@ -65,7 +81,7 @@ every 20s, so they self-heal after connection drops or laptop sleep
 
 Tunnels vs. services: a tunnel gives you a local TCP port (use for anything
 non-HTTP, or when the app itself must see `127.0.0.1`); a service gives you
-a stable named URL through netsshpeek's proxy. Both ride the same SSH connection.
+a stable named URL through sshpeek's proxy. Both ride the same SSH connection.
 
 ## Notes
 
@@ -85,6 +101,8 @@ GET  /api/services                 declared HTTP services + proxy URLs
 GET  /api/ls?host=&path=           directory listing (default: remote $HOME)
 GET  /api/file?host=&path=[&dl=1]  stream file bytes
 GET  /api/events?host=&path=       SSE change events (stable-size debounced)
+GET  /api/views                    open live views (one per events stream)
+DELETE /api/views/{id}             detach a live view (its tab closes itself)
 GET  /api/forwards                 list tunnels
 POST /api/forwards                 {"host": "mercury", "port": 8888, "local": 18888}
 DELETE /api/forwards/{id}

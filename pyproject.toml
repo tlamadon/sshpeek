@@ -6,6 +6,20 @@ readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Thibaut Lamadon" }]
 requires-python = ">=3.11"
+keywords = ["ssh", "sftp", "tunnel", "port-forward", "pdf", "s3", "web-ui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: System :: Networking",
+]
 dependencies = [
     "asyncssh>=2.14",
     "starlette>=0.37",
@@ -14,6 +28,13 @@ dependencies = [
     "httpx>=0.27",
     "websockets>=13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tlamadon/sshpeek"
+Issues = "https://github.com/tlamadon/sshpeek/issues"
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
 
 [project.scripts]
 sshpeek = "sshpeek.__main__:main"

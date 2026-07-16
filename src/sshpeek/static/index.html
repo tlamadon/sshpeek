@@ -46,6 +46,11 @@
   }
   .chip:hover { border-color: var(--accent); }
   .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .chip .kindtag {
+    font-size: 10px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 4px;
+  }
+  .chip.active .kindtag { color: #fff; border-color: rgba(255,255,255,0.45); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line); flex: none; }
   .dot.on { background: var(--ok); }
   .chip.active .dot.on { background: #B8E6C4; }
@@ -69,7 +74,13 @@
     margin: 0; padding: 10px 16px; font-size: 11px; font-weight: 600;
     letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
     border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: space-between;
   }
+  .opt {
+    font-weight: 400; letter-spacing: 0; text-transform: none;
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  }
+  .opt input { margin: 0; accent-color: var(--accent); }
 
   /* file browser */
   #crumbs {
@@ -87,6 +98,8 @@
     padding: 3px 8px; border-radius: 6px; font-family: var(--mono); font-size: 13px;
   }
   #listing li:hover { background: var(--accent-soft); }
+  #listing li.dotfile { opacity: 0.65; }
+  .ficon { flex: none; width: 1.5em; text-align: center; font-size: 12px; }
   .fname { cursor: pointer; }
   .fname.dir { color: var(--accent); font-weight: 600; }
   .fname:hover { text-decoration: underline; }
@@ -99,7 +112,7 @@
 
   /* patch bay */
   .rightcol { display: flex; flex-direction: column; gap: 18px; }
-  #fwlist, #svclist { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  #fwlist, #svclist, #viewlist { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
   .fw {
     font-family: var(--mono); font-size: 12.5px;
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
@@ -143,7 +156,9 @@
 
   <div class="cols">
     <section class="panel" id="files">
-      <h2>Files</h2>
+      <h2>Files
+        <label class="opt"><input type="checkbox" id="dotfiles"> dotfiles</label>
+      </h2>
       <div id="crumbs"></div>
       <ul id="listing"><li class="empty">Pick a host to start browsing. Anything that works with plain <code>ssh &lt;host&gt;</code> works here.</li></ul>
     </section>
@@ -152,6 +167,11 @@
     <section class="panel" id="svcpanel" style="display:none">
       <h2>Services</h2>
       <ul id="svclist"></ul>
+    </section>
+
+    <section class="panel" id="viewpanel" style="display:none">
+      <h2>Live views</h2>
+      <ul id="viewlist"></ul>
     </section>
 
     <section class="panel" id="forwards">
@@ -175,6 +195,7 @@
 "use strict";
 const $ = (s) => document.querySelector(s);
 const state = { host: null, path: null };
+let lastListing = null;
 
 /* ---------- helpers ---------- */
 async function api(url, opts) {
@@ -206,6 +227,24 @@ function fmtDate(t) {
     " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 function q(params) { return new URLSearchParams(params).toString(); }
+// Files with a live auto-refreshing viewer (/view): PDFs and images.
+const LIVE_RE = /\.(pdf|png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
+const ICONS = [
+  [/\.(png|jpe?g|gif|webp|svg|bmp|avif|ico|tiff?|eps)$/i, "🖼"],
+  [/\.pdf$/i, "📕"],
+  [/\.(mp4|mov|mkv|avi|webm)$/i, "🎬"],
+  [/\.(mp3|wav|flac|ogg|m4a)$/i, "🎵"],
+  [/\.(zip|tar|gz|tgz|bz2|xz|7z|rar|zst|dmg)$/i, "📦"],
+  [/\.(csv|tsv|parquet|feather|dta|rds|xls[xm]?)$/i, "📊"],
+  [/\.(ya?ml|toml|ini|cfg|conf|json|lock)$/i, "⚙️"],
+  [/\.(py|r|jl|js|ts|tsx|jsx|c|h|cpp|hpp|rs|go|java|sh|zsh|bash|sql|html|css|do|m|f90)$/i, "⌨️"],
+  [/\.(md|txt|rst|org|log|tex|bib)$/i, "📝"],
+];
+function icon(e) {
+  if (e.dir) return "📁";
+  for (const [re, ic] of ICONS) if (re.test(e.name)) return ic;
+  return "📄";
+}
 function setHash() {
   location.hash = q({ h: state.host || "", p: state.path || "" });
 }
@@ -224,7 +263,8 @@ async function loadHosts() {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "chip" + (h.name === state.host ? " active" : "");
-      b.innerHTML = `<span class="dot ${h.connected ? "on" : ""}"></span>` + h.name;
+      b.innerHTML = `<span class="dot ${h.connected ? "on" : ""}"></span>` + h.name +
+        (h.kind === "s3" ? '<span class="kindtag">s3</span>' : "");
       b.onclick = () => browse(h.name, null);
       box.appendChild(b);
     }
@@ -240,6 +280,7 @@ async function browse(host, path) {
     state.path = data.path;
     setHash();
     renderCrumbs(data.path);
+    lastListing = data;
     renderListing(data);
     if (!$("#fwform [name=fhost]").value) $("#fwform [name=fhost]").value = host;
     loadHosts();
@@ -280,25 +321,36 @@ function renderListing(data) {
   ul.innerHTML = "";
   if (data.path !== "/") {
     const up = document.createElement("li");
+    const ic = document.createElement("span");
+    ic.className = "ficon"; ic.textContent = "📁";
+    up.appendChild(ic);
     const a = document.createElement("span");
     a.className = "fname dir"; a.textContent = "..";
     a.onclick = () => browse(state.host, data.path.replace(/\/[^/]+$/, "") || "/");
     up.appendChild(a);
     ul.appendChild(up);
   }
-  if (!data.entries.length) {
-    ul.innerHTML += '<li class="empty">Empty directory.</li>';
+  let entries = data.entries;
+  if (!$("#dotfiles").checked) entries = entries.filter((e) => !e.name.startsWith("."));
+  if (!entries.length) {
+    const hidden = data.entries.length - entries.length;
+    ul.innerHTML += '<li class="empty">' +
+      (hidden ? "Only dotfiles here (" + hidden + " hidden)." : "Empty directory.") + "</li>";
     return;
   }
-  for (const e of data.entries) {
+  for (const e of entries) {
     const li = document.createElement("li");
+    if (e.name.startsWith(".")) li.classList.add("dotfile");
     const full = (data.path === "/" ? "" : data.path) + "/" + e.name;
+    const ic = document.createElement("span");
+    ic.className = "ficon"; ic.textContent = icon(e);
+    li.appendChild(ic);
     const name = document.createElement("span");
     name.className = "fname" + (e.dir ? " dir" : "");
     name.textContent = e.name + (e.dir ? "/" : "");
     name.onclick = () => {
       if (e.dir) return browse(state.host, full);
-      if (/\.pdf$/i.test(e.name)) {
+      if (LIVE_RE.test(e.name)) {
         window.open("/view?" + q({ host: state.host, path: full }), "_blank");
       } else {
         window.open("/api/file?" + q({ host: state.host, path: full }), "_blank");
@@ -311,7 +363,7 @@ function renderListing(data) {
     if (!e.dir) {
       const acts = document.createElement("span");
       acts.className = "facts";
-      if (/\.pdf$/i.test(e.name)) {
+      if (LIVE_RE.test(e.name)) {
         const live = document.createElement("a");
         live.href = "/view?" + q({ host: state.host, path: full });
         live.target = "_blank"; live.title = "live view (auto-refresh)";
@@ -349,6 +401,48 @@ async function loadServices() {
         `<span class="jack" title="${s.up ? "up" : "connecting…"}"></span>` +
         `<span class="route"><a href="${s.url}" target="_blank">${s.name}.${s.host}</a>` +
         `<span class="target">${s.host} → ${s.target}</span></span>`;
+      ul.appendChild(li);
+    }
+  } catch (e) { toast(e.message); }
+}
+
+function fmtAge(t) {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 60) return Math.round(s) + "s";
+  if (s < 3600) return Math.round(s / 60) + "m";
+  return (s / 3600).toFixed(1) + "h";
+}
+async function loadViews() {
+  try {
+    const views = await api("/api/views");
+    const panel = $("#viewpanel"), ul = $("#viewlist");
+    if (!views.length) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    ul.innerHTML = "";
+    for (const v of views) {
+      const li = document.createElement("li");
+      li.className = "fw";
+      li.innerHTML = '<span class="jack" title="watching"></span>';
+      const route = document.createElement("span");
+      route.className = "route";
+      const a = document.createElement("a");
+      a.href = "/view?" + q({ host: v.host, path: v.path });
+      a.target = "_blank"; a.textContent = v.path.split("/").pop();
+      route.appendChild(a);
+      const target = document.createElement("span");
+      target.className = "target";
+      target.textContent = v.host + ":" + v.path + " · open " + fmtAge(v.started);
+      route.appendChild(target);
+      li.appendChild(route);
+      const del = document.createElement("button");
+      del.type = "button"; del.textContent = "✕"; del.title = "close this live view";
+      del.onclick = async () => {
+        try {
+          await api("/api/views/" + v.id, { method: "DELETE" });
+          setTimeout(loadViews, 500);   // the stream unwinds on its next tick
+        } catch (e) { toast(e.message); }
+      };
+      li.appendChild(del);
       ul.appendChild(li);
     }
   } catch (e) { toast(e.message); }
@@ -419,6 +513,11 @@ $("#fwform").onsubmit = async (e) => {
     loadHosts();
   } catch (err) { toast(err.message); }
 };
+$("#dotfiles").checked = localStorage.getItem("sshpeek.dotfiles") === "1";
+$("#dotfiles").onchange = () => {
+  localStorage.setItem("sshpeek.dotfiles", $("#dotfiles").checked ? "1" : "0");
+  if (lastListing) renderListing(lastListing);
+};
 window.addEventListener("hashchange", () => {
   const h = readHash();
   if (h.h && (h.h !== state.host || h.p !== state.path)) browse(h.h, h.p);
@@ -427,7 +526,8 @@ window.addEventListener("hashchange", () => {
 loadHosts();
 loadForwards();
 loadServices();
-setInterval(() => { loadForwards(); loadServices(); }, 15000);
+loadViews();
+setInterval(() => { loadForwards(); loadServices(); loadViews(); }, 15000);
 const init = readHash();
 if (init.h) browse(init.h, init.p);
 </script>

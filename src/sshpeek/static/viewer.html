@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sshpeek · pdf</title>
+<title>sshpeek · live view</title>
 <link rel="icon" href="data:,">
 <style>
   :root {
@@ -43,7 +43,14 @@
 
   #scroll { flex: 1; overflow: auto; }
   .pageset { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18px 0 40px; }
-  .pageset canvas { background: #fff; box-shadow: 0 1px 4px rgba(35,40,45,0.18); }
+  .page { position: relative; flex: none; }
+  .page canvas { display: block; background: #fff; box-shadow: 0 1px 4px rgba(35,40,45,0.18); }
+  .page a.link { position: absolute; }
+  .page a.link:hover { background: rgba(14,117,104,0.10); outline: 1px solid rgba(14,117,104,0.45); }
+  .pageset img {
+    background: #fff; box-shadow: 0 1px 4px rgba(35,40,45,0.18);
+    max-width: min(calc(100% - 36px), 1000px); height: auto;
+  }
   .note { color: var(--muted); font-size: 13px; padding: 30px; text-align: center; }
 </style>
 </head>
@@ -58,10 +65,6 @@
 <div id="scroll"><div class="pageset"><div class="note">loading…</div></div></div>
 
 <script type="module">
-import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs";
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.mjs";
-
 const qs = new URLSearchParams(location.search);
 const host = qs.get("host"), path = qs.get("path");
 const scroll = document.getElementById("scroll");
@@ -74,39 +77,54 @@ document.getElementById("fname").textContent = base;
 document.getElementById("fname").title = path;
 document.getElementById("hostchip").textContent = host;
 
+// Anything that isn't an image goes through pdf.js, loaded on demand.
+const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i.test(base);
+const pdfjsLib = isImage ? null :
+  await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.mjs");
+if (pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.mjs";
+
 let rendering = false, queued = null;
+
+// PDF hyperlinks are annotations, not page graphics; overlay each canvas
+// with real <a> elements so they stay clickable.
+async function addLinks(doc, page, vp, div, pageDivs) {
+  for (const a of await page.getAnnotations({ intent: "display" })) {
+    if (a.subtype !== "Link" || (!a.url && !a.dest)) continue;
+    const [x1, y1, x2, y2] =
+      pdfjsLib.Util.normalizeRect(vp.convertToViewportRectangle(a.rect));
+    const el = document.createElement("a");
+    el.className = "link";
+    el.style.left = x1 + "px";
+    el.style.top = y1 + "px";
+    el.style.width = (x2 - x1) + "px";
+    el.style.height = (y2 - y1) + "px";
+    if (a.url) {
+      el.href = a.url;
+      el.target = "_blank";
+      el.rel = "noopener";
+      el.title = a.url;
+    } else {
+      el.href = "#";
+      el.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const dest = typeof a.dest === "string" ? await doc.getDestination(a.dest) : a.dest;
+        if (!dest) return;
+        const idx = await doc.getPageIndex(dest[0]);
+        pageDivs[idx]?.scrollIntoView({ behavior: "smooth" });
+      });
+    }
+    div.appendChild(el);
+  }
+}
 
 async function render(version) {
   if (rendering) { queued = version; return; }
   rendering = true;
   try {
     const url = "/api/file?" + new URLSearchParams({ host, path, v: version });
-    const doc = await pdfjsLib.getDocument(url).promise;
-
-    // Render every page into a fresh container, then swap it in: no white
-    // flash, and the scroll offset carries over.
-    const next = document.createElement("div");
-    next.className = "pageset";
-    const width = Math.min(scroll.clientWidth - 36, 1000);
-    const dpr = window.devicePixelRatio || 1;
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const v1 = page.getViewport({ scale: 1 });
-      const scale = width / v1.width;
-      const vp = page.getViewport({ scale: scale * dpr });
-      const c = document.createElement("canvas");
-      c.width = vp.width; c.height = vp.height;
-      c.style.width = (vp.width / dpr) + "px";
-      c.style.height = (vp.height / dpr) + "px";
-      await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
-      next.appendChild(c);
-    }
-
-    const y = scroll.scrollTop;
-    document.querySelector(".pageset").replaceWith(next);
-    scroll.scrollTop = y;
-    meta.textContent = doc.numPages + " pages · updated " +
-      new Date().toLocaleTimeString();
+    const what = isImage ? await renderImage(url) : await renderPdf(url);
+    meta.textContent = what + " · updated " + new Date().toLocaleTimeString();
   } catch (e) {
     // Keep the last good render; a half-written or unreadable file just
     // reports itself in the header and we wait for the next change event.
@@ -117,16 +135,75 @@ async function render(version) {
   }
 }
 
+// Render into a fresh container, then swap it in: no white flash, and the
+// scroll offset carries over.
+function swap(next) {
+  const y = scroll.scrollTop;
+  document.querySelector(".pageset").replaceWith(next);
+  scroll.scrollTop = y;
+}
+
+async function renderImage(url) {
+  const img = new Image();
+  await new Promise((ok, fail) => {
+    img.onload = ok;
+    img.onerror = () => fail(new Error("could not load image"));
+    img.src = url;
+  });
+  const next = document.createElement("div");
+  next.className = "pageset";
+  next.appendChild(img);
+  swap(next);
+  return img.naturalWidth + "×" + img.naturalHeight;
+}
+
+async function renderPdf(url) {
+  const doc = await pdfjsLib.getDocument(url).promise;
+  const next = document.createElement("div");
+  next.className = "pageset";
+  const width = Math.min(scroll.clientWidth - 36, 1000);
+  const dpr = window.devicePixelRatio || 1;
+  const pageDivs = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const v1 = page.getViewport({ scale: 1 });
+    const scale = width / v1.width;
+    const vp = page.getViewport({ scale: scale * dpr });
+    const cssVp = page.getViewport({ scale });
+    const div = document.createElement("div");
+    div.className = "page";
+    const c = document.createElement("canvas");
+    c.width = vp.width; c.height = vp.height;
+    c.style.width = cssVp.width + "px";
+    c.style.height = cssVp.height + "px";
+    await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    div.appendChild(c);
+    await addLinks(doc, page, cssVp, div, pageDivs);
+    next.appendChild(div);
+    pageDivs.push(div);
+  }
+  swap(next);
+  return doc.numPages + " pages";
+}
+
 const es = new EventSource("/api/events?" + new URLSearchParams({ host, path }));
 es.onopen = () => { status.className = "on"; status.title = "watching"; };
 es.onerror = () => { status.className = "off"; status.title = "reconnecting…"; };
 es.onmessage = (e) => {
   const d = JSON.parse(e.data);
+  if (d.type === "bye") {          // detached from the Live views panel
+    es.close();
+    window.close();                // works when this tab was opened by the UI
+    status.className = "off"; status.title = "detached";
+    meta.textContent = "live view detached — safe to close this tab";
+    return;
+  }
   render(d.mtime + "-" + (d.size || 0));
 };
 
+// Images scale in CSS; only PDF pages need a re-render on resize.
 let resizeT;
-window.addEventListener("resize", () => {
+if (!isImage) window.addEventListener("resize", () => {
   clearTimeout(resizeT);
   resizeT = setTimeout(() => render("resize-" + Date.now()), 300);
 });

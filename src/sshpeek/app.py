@@ -3,13 +3,15 @@
 Endpoints
 ---------
 GET  /                      UI: host picker, file browser, tunnels, services
-GET  /view?host=&path=      UI: live PDF viewer (auto-refresh on change)
-GET  /api/hosts             configured + connected hosts
+GET  /view?host=&path=      UI: live PDF/image viewer (auto-refresh on change)
+GET  /api/hosts             configured + connected hosts and s3 sources
 GET  /api/services          declared HTTP services with their proxy URLs
 GET  /api/ls?host=&path=    directory listing (path defaults to remote home)
 GET  /api/file?host=&path=  stream file bytes (add &dl=1 to force download)
 GET  /api/events?host=&path= SSE: emits when the file's (mtime, size) changes
                              and the size has been stable for one poll interval
+GET  /api/views             open live views (one per /api/events stream)
+DELETE /api/views/{id}      detach a live view (its tab closes itself)
 GET  /api/forwards          list port forwards
 POST /api/forwards          {"host": ..., "port": ..., "remote_host": "localhost"}
 DELETE /api/forwards/{id}   drop a forward
@@ -19,10 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
 import mimetypes
 import stat as statmod
+import time
 from pathlib import Path, PurePosixPath
 
 import asyncssh
@@ -34,14 +38,20 @@ from starlette.routing import Route
 from .config import load_config
 from .pool import SSHPool
 from .proxy import ProxyRouter, service_fid
+from .s3 import S3Error, S3Source
 
 log = logging.getLogger("sshpeek.app")
 
 pool = SSHPool()
 CONFIG = load_config()
+S3 = {name: S3Source(spec) for name, spec in CONFIG.s3.items()}
 STATIC = Path(__file__).parent / "static"
 
 CHUNK = 256 * 1024
+
+# Live viewer connections: one entry per open /api/events stream.
+WATCHERS: dict[int, dict] = {}
+_watcher_seq = itertools.count(1)
 
 # Extensions we serve as text/plain when mimetypes has no (browser-friendly)
 # answer, so "peeking" at them renders in the browser instead of downloading.
@@ -82,9 +92,9 @@ async def view(request: Request) -> FileResponse:
 async def hosts(request: Request) -> JSONResponse:
     live = pool.hosts()
     names = list(dict.fromkeys(list(CONFIG.hosts) + list(live)))
-    return JSONResponse(
-        [{"name": n, "connected": live.get(n, False)} for n in names]
-    )
+    out = [{"name": n, "connected": live.get(n, False), "kind": "ssh"} for n in names]
+    out += [{"name": n, "connected": s.connected, "kind": "s3"} for n, s in S3.items()]
+    return JSONResponse(out)
 
 
 async def services(request: Request) -> JSONResponse:
@@ -111,6 +121,14 @@ async def ls(request: Request) -> JSONResponse:
     path = request.query_params.get("path") or "."
     if not host:
         return err("missing ?host=", 400)
+    src = S3.get(host)
+    if src is not None:
+        cwd = "/" if path in (".", "", "/") else "/" + path.strip("/")
+        try:
+            entries = await src.listdir(cwd)
+            return JSONResponse({"host": host, "path": cwd, "entries": entries})
+        except S3Error as e:
+            return err(e)
     try:
         st = await pool.get(host)
         cwd = await st.sftp.realpath(path)
@@ -140,6 +158,32 @@ async def file_(request: Request) -> Response:
     dl = bool(request.query_params.get("dl"))
     if not host or not path:
         return err("missing ?host= or ?path=", 400)
+    src = S3.get(host)
+    if src is not None:
+        try:
+            size, stream = await src.open(path)
+        except S3Error as e:
+            return err(e)
+
+        async def s3body():
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(stream.read, CHUNK)
+                    if not chunk:
+                        break
+                    yield chunk
+            except Exception as e:  # noqa: BLE001 - died mid-stream
+                log.warning("stream of %s:%s aborted: %s", host, path, e)
+            finally:
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+        headers = {"Content-Length": str(size)}
+        if dl:
+            headers["Content-Disposition"] = (
+                f'attachment; filename="{PurePosixPath(path).name}"'
+            )
+        return StreamingResponse(s3body(), media_type=guess_type(path, dl), headers=headers)
     try:
         st = await pool.get(host)
         attrs = await st.sftp.stat(path)
@@ -187,40 +231,70 @@ async def events(request: Request) -> Response:
         interval = 2.0
     if not host or not path:
         return err("missing ?host= or ?path=", 400)
+    src = S3.get(host)
 
     async def gen():
-        last_emit: tuple | None = None
-        prev: tuple | None = None
-        first = True
-        while True:
-            cur: tuple | None = None
-            try:
-                st = await pool.get(host)
-                a = await st.sftp.stat(path)
-                cur = (a.mtime, a.size)
-            except (OSError, asyncssh.Error) as e:
-                log.debug("stat %s:%s failed: %s", host, path, e)
-            if cur is not None and first:
-                first = False
-                last_emit = cur
-                payload = {"type": "init", "mtime": cur[0], "size": cur[1]}
-                yield f"data: {json.dumps(payload)}\n\n"
-            elif cur is not None and cur == prev and cur != last_emit:
-                last_emit = cur
-                payload = {"type": "change", "mtime": cur[0], "size": cur[1]}
-                yield f"data: {json.dumps(payload)}\n\n"
-            else:
-                # Comment line: ignored by EventSource, but forces a write so
-                # a vanished client cancels this generator promptly.
-                yield ": ping\n\n"
-            prev = cur
-            await asyncio.sleep(interval)
+        wid = next(_watcher_seq)
+        close = asyncio.Event()
+        WATCHERS[wid] = {"id": wid, "host": host, "path": path,
+                         "started": time.time(), "close": close}
+        try:
+            last_emit: tuple | None = None
+            prev: tuple | None = None
+            first = True
+            while True:
+                cur: tuple | None = None
+                try:
+                    if src is not None:
+                        cur = await src.stat(path)
+                    else:
+                        st = await pool.get(host)
+                        a = await st.sftp.stat(path)
+                        cur = (a.mtime, a.size)
+                except (OSError, asyncssh.Error, S3Error) as e:
+                    log.debug("stat %s:%s failed: %s", host, path, e)
+                if cur is not None and first:
+                    first = False
+                    last_emit = cur
+                    payload = {"type": "init", "mtime": cur[0], "size": cur[1]}
+                    yield f"data: {json.dumps(payload)}\n\n"
+                elif cur is not None and cur == prev and cur != last_emit:
+                    last_emit = cur
+                    payload = {"type": "change", "mtime": cur[0], "size": cur[1]}
+                    yield f"data: {json.dumps(payload)}\n\n"
+                else:
+                    # Comment line: ignored by EventSource, but forces a write so
+                    # a vanished client cancels this generator promptly.
+                    yield ": ping\n\n"
+                prev = cur
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(close.wait(), interval)
+                if close.is_set():
+                    yield 'data: {"type": "bye"}\n\n'
+                    return
+        finally:
+            WATCHERS.pop(wid, None)
 
     return StreamingResponse(
         gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def views_get(request: Request) -> JSONResponse:
+    return JSONResponse([
+        {"id": w["id"], "host": w["host"], "path": w["path"], "started": w["started"]}
+        for w in WATCHERS.values()
+    ])
+
+
+async def views_delete(request: Request) -> JSONResponse:
+    w = WATCHERS.get(request.path_params["vid"])
+    if w is None:
+        return err("no such live view", 404)
+    w["close"].set()
+    return JSONResponse({"ok": True})
 
 
 async def forwards_get(request: Request) -> JSONResponse:
@@ -305,6 +379,8 @@ routes = [
     Route("/api/ls", ls),
     Route("/api/file", file_),
     Route("/api/events", events),
+    Route("/api/views", views_get),
+    Route("/api/views/{vid:int}", views_delete, methods=["DELETE"]),
     Route("/api/forwards", forwards_get, methods=["GET"]),
     Route("/api/forwards", forwards_post, methods=["POST"]),
     Route("/api/forwards/{fid:path}", forwards_delete, methods=["DELETE"]),

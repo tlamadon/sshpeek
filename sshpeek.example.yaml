@@ -28,3 +28,15 @@ hosts:
       grafana: 3000
 
   internultra:      # no tunnels or services: just a host chip for browsing
+
+# S3 buckets appear as browsable sources next to the SSH hosts (peek,
+# download, live view). Needs boto3: pip install 'sshpeek[s3]'.
+# Credentials use the normal chain: env vars, ~/.aws profiles, SSO.
+s3:
+  data: my-bucket   # shorthand: chip "data" -> bucket "my-bucket"
+  results:
+    bucket: my-results-bucket
+    prefix: runs/                # only browse under this key prefix
+    profile: work                # ~/.aws profile (optional)
+    region: us-east-2            # optional
+    endpoint: https://example.r2.cloudflarestorage.com  # R2/MinIO (optional)

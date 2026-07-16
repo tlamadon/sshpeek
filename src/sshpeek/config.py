@@ -28,9 +28,19 @@ Example:
           grafana: 3000
       internultra:                    # no tunnels: just a host chip in the UI
 
+    s3:
+      data: my-bucket                 # shorthand: chip "data" -> bucket
+      results:
+        bucket: my-results-bucket
+        prefix: runs/                 # browse under this key prefix
+        profile: work                 # ~/.aws profile (else default chain)
+        region: us-east-2
+        endpoint: https://...         # for R2 / MinIO / other S3 clones
+
 Tunnels are raw TCP binds on 127.0.0.1 (databases, anything). HTTP services
 are reverse-proxied by sshpeek itself under <name>.<host>.localhost, which
-browsers resolve to 127.0.0.1 natively.
+browsers resolve to 127.0.0.1 natively. S3 buckets appear as browsable
+sources next to the SSH hosts (requires `pip install sshpeek[s3]`).
 """
 
 from __future__ import annotations
@@ -67,10 +77,21 @@ class HostSpec:
 
 
 @dataclass
+class S3Spec:
+    name: str
+    bucket: str
+    prefix: str = ""
+    profile: str | None = None
+    region: str | None = None
+    endpoint: str | None = None
+
+
+@dataclass
 class Config:
     listen_host: str = "127.0.0.1"
     listen_port: int = 8642
     hosts: dict[str, HostSpec] = field(default_factory=dict)
+    s3: dict[str, S3Spec] = field(default_factory=dict)
     path: Path | None = None
 
 
@@ -106,6 +127,20 @@ def _parse(data: dict, path: Path) -> Config:
             rh, rp = _parse_target(target)
             hs.http.append(HttpService(name=str(sname), remote_host=rh, remote_port=rp))
         cfg.hosts[hs.name] = hs
+
+    for name, spec in (data.get("s3") or {}).items():
+        if isinstance(spec, str):  # shorthand: name -> bucket
+            spec = {"bucket": spec}
+        spec = spec or {}
+        prefix = str(spec.get("prefix", "")).strip("/")
+        cfg.s3[str(name)] = S3Spec(
+            name=str(name),
+            bucket=str(spec.get("bucket", name)),
+            prefix=prefix + "/" if prefix else "",
+            profile=spec.get("profile"),
+            region=spec.get("region"),
+            endpoint=spec.get("endpoint"),
+        )
     return cfg
 
 

@@ -34,6 +34,37 @@ def test_parse_config():
     assert cfg.hosts["bare"].tunnels == [] and cfg.hosts["bare"].http == []
 
 
+def test_parse_s3_config():
+    cfg = _parse(
+        {
+            "s3": {
+                "data": "my-bucket",
+                "results": {
+                    "bucket": "my-results",
+                    "prefix": "/runs/",
+                    "profile": "work",
+                },
+            }
+        },
+        Path("test.yaml"),
+    )
+    assert cfg.s3["data"].bucket == "my-bucket" and cfg.s3["data"].prefix == ""
+    r = cfg.s3["results"]
+    assert r.bucket == "my-results" and r.prefix == "runs/" and r.profile == "work"
+
+
+def test_s3_key_mapping():
+    from sshpeek.config import S3Spec
+    from sshpeek.s3 import S3Source
+
+    src = S3Source(S3Spec(name="x", bucket="b", prefix="runs/"))
+    assert src._key("/") == "runs/"
+    assert src._key("/2024/plot.pdf") == "runs/2024/plot.pdf"
+    bare = S3Source(S3Spec(name="y", bucket="b"))
+    assert bare._key("/") == ""
+    assert bare._key("/a/b") == "a/b"
+
+
 def test_guess_type():
     assert guess_type("a/paper.tex", dl=False).startswith("text/plain")
     assert guess_type("a/README", dl=False).startswith("text/plain")
