@@ -13,6 +13,8 @@ Example:
     listen:
       host: 127.0.0.1
       port: 8642
+      password: s3cret            # optional: permanent secret instead of the
+                                  # per-run token; auth: none disables auth
 
     hosts:
       mercury:
@@ -90,6 +92,8 @@ class S3Spec:
 class Config:
     listen_host: str = "127.0.0.1"
     listen_port: int = 8642
+    password: str | None = None  # permanent auth secret (else per-run token)
+    auth_enabled: bool = True
     hosts: dict[str, HostSpec] = field(default_factory=dict)
     s3: dict[str, S3Spec] = field(default_factory=dict)
     path: Path | None = None
@@ -111,6 +115,11 @@ def _parse(data: dict, path: Path) -> Config:
     listen = data.get("listen") or {}
     cfg.listen_host = str(listen.get("host", cfg.listen_host))
     cfg.listen_port = int(listen.get("port", cfg.listen_port))
+    if listen.get("password"):
+        cfg.password = str(listen["password"])
+    cfg.auth_enabled = str(listen.get("auth", "on")).lower() not in (
+        "none", "off", "false", "no",
+    )
 
     for name, spec in (data.get("hosts") or {}).items():
         hs = HostSpec(name=str(name))

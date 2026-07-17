@@ -77,12 +77,44 @@ def test_service_fid():
     assert service_fid("mercury", "jupyter") == "http:mercury:jupyter"
 
 
+def test_parse_auth_config():
+    cfg = _parse({"listen": {"password": "hunter2"}}, Path("t.yaml"))
+    assert cfg.password == "hunter2" and cfg.auth_enabled
+    assert not _parse({"listen": {"auth": "none"}}, Path("t.yaml")).auth_enabled
+    cfg = _parse({}, Path("t.yaml"))
+    assert cfg.auth_enabled and cfg.password is None
+
+
 def test_ui_serves():
     from starlette.testclient import TestClient
-    from sshpeek.app import app
+    from sshpeek.app import SECRET, app
 
-    with TestClient(app) as c:
+    with TestClient(app, base_url="http://localhost") as c:
+        c.headers["Authorization"] = f"Bearer {SECRET}"
         assert "sshpeek" in c.get("/").text
         assert c.get("/view").status_code == 200
         assert c.get("/api/forwards").json() == []
         assert c.get("/api/ls").status_code == 400
+
+
+def test_host_guard_and_auth():
+    from starlette.testclient import TestClient
+    from sshpeek.app import SECRET, app
+
+    with TestClient(app, base_url="http://localhost") as c:
+        # DNS-rebinding guard: foreign Host headers rejected outright.
+        assert c.get("/", headers={"Host": "evil.example"}).status_code == 421
+        # No credentials: HTML gets the login page, API gets 401 JSON.
+        r = c.get("/", headers={"Accept": "text/html"})
+        assert r.status_code == 401 and "sign in" in r.text
+        assert c.get("/api/forwards").status_code == 401
+        # ?token= works statelessly on the API, sets the cookie on pages.
+        assert c.get("/api/forwards", params={"token": SECRET}).json() == []
+        r = c.get("/", params={"token": SECRET})
+        assert r.status_code == 200 and "sshpeek" in r.text
+        assert c.get("/api/forwards").json() == []  # cookie now set
+        # Login form: wrong secret re-prompts, right one signs in.
+        c.cookies.clear()
+        assert c.post("/auth", data={"token": "nope", "next": "/"}).status_code == 401
+        r = c.post("/auth", data={"token": SECRET, "next": "/"})
+        assert r.status_code == 200 and c.get("/view").status_code == 200

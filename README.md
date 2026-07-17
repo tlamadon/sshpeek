@@ -87,8 +87,12 @@ a stable named URL through sshpeek's proxy. Both ride the same SSH connection.
 
 - Host keys are checked against `~/.ssh/known_hosts`; if you have never
   ssh'd to a host from this machine, do that once first.
-- Binds to 127.0.0.1 by default. Anything running locally can reach the API
-  and therefore your remote files — same trust model as your ssh-agent.
+- Binds to 127.0.0.1 by default, and the UI/API/proxied services require
+  auth: a fresh token printed with the startup URL, or a permanent
+  `listen.password` in sshpeek.yaml (so browser cookies survive restarts).
+  `listen.auth: none` opts out. A Host-header allowlist blocks DNS-rebinding
+  from hostile web pages. Caveat: raw TCP tunnels bind plain local ports —
+  no HTTP auth applies there, so any local process can use an open tunnel.
 - `*.localhost` resolution is native in Chrome/Firefox/Safari and
   systemd-resolved; curl needs `--resolve` or a hosts entry.
 - `--port` / `--host` / `--config` / `-v` flags on the CLI.

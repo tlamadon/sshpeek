@@ -15,6 +15,9 @@ DELETE /api/views/{id}      detach a live view (its tab closes itself)
 GET  /api/forwards          list port forwards
 POST /api/forwards          {"host": ..., "port": ..., "remote_host": "localhost"}
 DELETE /api/forwards/{id}   drop a forward
+
+Everything is behind cookie/token auth (see auth.py) and a Host-header
+allowlist (see proxy.py) unless listen.auth is set to none.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import itertools
 import json
 import logging
 import mimetypes
+import secrets
 import stat as statmod
 import time
 from pathlib import Path, PurePosixPath
@@ -35,6 +39,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .auth import AuthGate
 from .config import load_config
 from .pool import SSHPool
 from .proxy import ProxyRouter, service_fid
@@ -46,6 +51,10 @@ pool = SSHPool()
 CONFIG = load_config()
 S3 = {name: S3Source(spec) for name, spec in CONFIG.s3.items()}
 STATIC = Path(__file__).parent / "static"
+
+# Auth secret: permanent password from the config, else a per-run token
+# (printed with the startup URL). listen.auth: none disables.
+SECRET = (CONFIG.password or secrets.token_urlsafe(24)) if CONFIG.auth_enabled else None
 
 CHUNK = 256 * 1024
 
@@ -104,12 +113,18 @@ async def services(request: Request) -> JSONResponse:
         for s in hs.http:
             f = st.forwards.get(service_fid(hs.name, s.name)) if st else None
             up = bool(st and not st.closed and f and f.local_port)
+            url = f"http://{s.name}.{hs.name}.localhost:{CONFIG.listen_port}/"
+            if SECRET:
+                # Service origins have their own cookie jars; the token in the
+                # link blesses each one on first visit (proxy sets the cookie
+                # and redirects to the clean URL).
+                url += f"?sshpeek_token={SECRET}"
             out.append(
                 {
                     "name": s.name,
                     "host": hs.name,
                     "target": f"{s.remote_host}:{s.remote_port}",
-                    "url": f"http://{s.name}.{hs.name}.localhost:{CONFIG.listen_port}/",
+                    "url": url,
                     "up": up,
                 }
             )
@@ -389,6 +404,13 @@ routes = [
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: Starlette):
+    if SECRET and not CONFIG.password:
+        print(f"sshpeek: open http://{CONFIG.listen_host}:{CONFIG.listen_port}/?token={SECRET}",
+              flush=True)
+    elif SECRET:
+        print("sshpeek: password auth on (listen.password in sshpeek.yaml)", flush=True)
+    else:
+        print("sshpeek: auth disabled (listen.auth: none)", flush=True)
     ensure_task = asyncio.create_task(_ensure_loop())
     yield
     ensure_task.cancel()
@@ -397,4 +419,4 @@ async def lifespan(_app: Starlette):
 
 
 inner = Starlette(routes=routes, lifespan=lifespan)
-app = ProxyRouter(inner, CONFIG, pool)
+app = ProxyRouter(AuthGate(inner, SECRET), CONFIG, pool, secret=SECRET)

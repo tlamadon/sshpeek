@@ -19,14 +19,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import parse_qsl, urlencode
 
 import httpx
 from starlette.background import BackgroundTask
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse, StreamingResponse
+from starlette.responses import PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.websockets import WebSocket
 from websockets.asyncio.client import connect as ws_connect
 
+from . import auth
 from .config import Config, HostSpec, HttpService
 from .pool import SSHPool
 
@@ -47,19 +49,34 @@ class ProxyRouter:
     """ASGI wrapper: routes *.localhost hosts to the proxy, everything else
     to the inner app."""
 
-    def __init__(self, app, cfg: Config, pool: SSHPool) -> None:
+    def __init__(self, app, cfg: Config, pool: SSHPool, secret: str | None = None) -> None:
         self.app = app
         self.cfg = cfg
         self.pool = pool
+        self.secret = secret
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(None, connect=10), follow_redirects=False
         )
 
     # -- routing -----------------------------------------------------------
 
-    def _match(self, scope) -> tuple[HostSpec, HttpService] | None:
+    @staticmethod
+    def _hostname(scope) -> str:
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
-        hostname = (headers.get("host") or "").split(":")[0].lower()
+        host = (headers.get("host") or "").lower()
+        if host.startswith("["):  # [::1]:8642
+            return host.partition("]")[0] + "]"
+        return host.split(":")[0]
+
+    def _host_allowed(self, hostname: str) -> bool:
+        """Reject foreign Host headers: the DNS-rebinding guard."""
+        return (
+            hostname in ("localhost", "127.0.0.1", "[::1]", "::1", self.cfg.listen_host)
+            or hostname.endswith(".localhost")
+        )
+
+    def _match(self, scope) -> tuple[HostSpec, HttpService] | None:
+        hostname = self._hostname(scope)
         if not hostname.endswith(".localhost"):
             return None
         labels = hostname[: -len(".localhost")]
@@ -85,12 +102,43 @@ class ProxyRouter:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] in ("http", "websocket"):
+            if not self._host_allowed(self._hostname(scope)):
+                if scope["type"] == "websocket":
+                    await receive()
+                    return await send({"type": "websocket.close", "code": 4421})
+                resp = PlainTextResponse(
+                    "sshpeek: unrecognized Host header", status_code=421
+                )
+                return await resp(scope, receive, send)
             m = self._match(scope)
             if m is not None:
+                if self.secret and not auth.matches(self.secret, auth.cookie_secret(scope)):
+                    return await self._proxy_auth(scope, receive, send)
                 if scope["type"] == "http":
                     return await self._http(scope, receive, send, *m)
                 return await self._ws(scope, receive, send, *m)
         await self.app(scope, receive, send)
+
+    async def _proxy_auth(self, scope, receive, send):
+        """Service origins are their own cookie jars: bless each one via the
+        ?sshpeek_token=... the UI appends to service links, then redirect to
+        the clean URL so the app never sees the parameter."""
+        if scope["type"] == "websocket":
+            await receive()
+            return await send({"type": "websocket.close", "code": 4401})
+        query = parse_qsl(scope.get("query_string", b"").decode())
+        if auth.matches(self.secret, dict(query).get("sshpeek_token")):
+            rest = urlencode([(k, v) for k, v in query if k != "sshpeek_token"])
+            resp = RedirectResponse(
+                scope["path"] + (f"?{rest}" if rest else ""), status_code=303
+            )
+            auth.set_cookie(resp, self.secret)
+        else:
+            resp = PlainTextResponse(
+                "sshpeek: authentication required -- open this service from the sshpeek UI",
+                status_code=401,
+            )
+        await resp(scope, receive, send)
 
     # -- http --------------------------------------------------------------
 

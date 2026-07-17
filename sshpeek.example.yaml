@@ -5,6 +5,8 @@
 listen:
   host: 127.0.0.1
   port: 8642
+  # password: s3cret   # permanent secret; otherwise a fresh token is printed
+  #                    # at startup. auth: none disables auth entirely.
 
 hosts:
   mercury:

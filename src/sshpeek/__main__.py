@@ -30,7 +30,7 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    print(f"sshpeek: http://{args.host}:{args.port}")
+    print(f"sshpeek: http://{args.host}:{args.port}", flush=True)
     uvicorn.run("sshpeek.app:app", host=args.host, port=args.port, log_level="warning")
 
 
