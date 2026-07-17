@@ -77,6 +77,16 @@ document.getElementById("fname").textContent = base;
 document.getElementById("fname").title = path;
 document.getElementById("hostchip").textContent = host;
 
+// Record this view in the shared history (the index page renders it as
+// "Recent views" so closed documents can be reopened).
+try {
+  const KEY = "sshpeek.viewhist";
+  const hist = JSON.parse(localStorage.getItem(KEY) || "[]")
+    .filter((h) => !(h.host === host && h.path === path));
+  hist.unshift({ host, path, t: Date.now() });
+  localStorage.setItem(KEY, JSON.stringify(hist.slice(0, 20)));
+} catch (_) {}
+
 // Anything that isn't an image goes through pdf.js, loaded on demand.
 const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i.test(base);
 const pdfjsLib = isImage ? null :

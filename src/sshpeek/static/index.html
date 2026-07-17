@@ -112,7 +112,9 @@
 
   /* patch bay */
   .rightcol { display: flex; flex-direction: column; gap: 18px; }
-  #fwlist, #svclist, #viewlist { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  #fwlist, #svclist, #viewlist, #histlist { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+  #histlist .fw { border-style: dashed; }
+  #histclear { font-weight: 400; letter-spacing: 0; text-transform: none; cursor: pointer; }
   .fw {
     font-family: var(--mono); font-size: 12.5px;
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
@@ -172,6 +174,11 @@
     <section class="panel" id="viewpanel" style="display:none">
       <h2>Live views</h2>
       <ul id="viewlist"></ul>
+    </section>
+
+    <section class="panel" id="histpanel" style="display:none">
+      <h2>Recent views <a id="histclear" title="forget all">clear</a></h2>
+      <ul id="histlist"></ul>
     </section>
 
     <section class="panel" id="forwards">
@@ -410,12 +417,52 @@ function fmtAge(t) {
   const s = Math.max(0, Date.now() / 1000 - t);
   if (s < 60) return Math.round(s) + "s";
   if (s < 3600) return Math.round(s / 60) + "m";
-  return (s / 3600).toFixed(1) + "h";
+  if (s < 86400) return (s / 3600).toFixed(1) + "h";
+  return Math.round(s / 86400) + "d";
+}
+const HIST_KEY = "sshpeek.viewhist";
+function readHist() {
+  try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]"); }
+  catch (_) { return []; }
+}
+function renderHistory(open) {
+  const panel = $("#histpanel"), ul = $("#histlist");
+  const openSet = new Set(open.map((v) => v.host + ":" + v.path));
+  const hist = readHist().filter((h) => !openSet.has(h.host + ":" + h.path));
+  if (!hist.length) { panel.style.display = "none"; return; }
+  panel.style.display = "";
+  ul.innerHTML = "";
+  for (const h of hist) {
+    const li = document.createElement("li");
+    li.className = "fw";
+    const route = document.createElement("span");
+    route.className = "route";
+    const a = document.createElement("a");
+    a.href = "/view?" + q({ host: h.host, path: h.path });
+    a.target = "_blank"; a.textContent = h.path.split("/").pop();
+    a.title = "reopen live view";
+    route.appendChild(a);
+    const target = document.createElement("span");
+    target.className = "target";
+    target.textContent = h.host + ":" + h.path + " · " + fmtAge(h.t / 1000) + " ago";
+    route.appendChild(target);
+    li.appendChild(route);
+    const del = document.createElement("button");
+    del.type = "button"; del.textContent = "✕"; del.title = "forget";
+    del.onclick = () => {
+      localStorage.setItem(HIST_KEY, JSON.stringify(
+        readHist().filter((x) => !(x.host === h.host && x.path === h.path))));
+      renderHistory(open);
+    };
+    li.appendChild(del);
+    ul.appendChild(li);
+  }
 }
 async function loadViews() {
   try {
     const views = await api("/api/views");
     const panel = $("#viewpanel"), ul = $("#viewlist");
+    renderHistory(views);
     if (!views.length) { panel.style.display = "none"; return; }
     panel.style.display = "";
     ul.innerHTML = "";
@@ -513,6 +560,14 @@ $("#fwform").onsubmit = async (e) => {
     loadHosts();
   } catch (err) { toast(err.message); }
 };
+$("#histclear").onclick = () => {
+  localStorage.removeItem(HIST_KEY);
+  renderHistory([]);
+};
+// Viewer tabs write the history; re-render when they do.
+window.addEventListener("storage", (e) => {
+  if (e.key === HIST_KEY) loadViews();
+});
 $("#dotfiles").checked = localStorage.getItem("sshpeek.dotfiles") === "1";
 $("#dotfiles").onchange = () => {
   localStorage.setItem("sshpeek.dotfiles", $("#dotfiles").checked ? "1" : "0");
