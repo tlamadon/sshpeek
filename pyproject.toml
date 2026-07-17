@@ -1,6 +1,6 @@
 [project]
 name = "sshpeek"
-version = "0.2.0"
+version = "0.1.1"
 description = "Local web UI for peeking at remote files and ports over SSH"
 readme = "README.md"
 license = { file = "LICENSE" }
