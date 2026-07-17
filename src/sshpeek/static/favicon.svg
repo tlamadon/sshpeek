@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- sshpeek: the "ee" as two eyes peeking over a wall -->
+  <defs>
+    <clipPath id="tile"><rect width="64" height="64" rx="14"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="64" height="64" fill="#0E7568"/>
+    <circle cx="21" cy="34" r="10.5" fill="#F2F3EF"/>
+    <circle cx="43" cy="34" r="10.5" fill="#F2F3EF"/>
+    <rect y="40" width="64" height="24" fill="#0A5A50"/>
+    <circle cx="21" cy="31.5" r="5" fill="#23282D"/>
+    <circle cx="43" cy="31.5" r="5" fill="#23282D"/>
+  </g>
+</svg>

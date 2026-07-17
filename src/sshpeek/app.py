@@ -96,6 +96,10 @@ async def view(request: Request) -> FileResponse:
     return FileResponse(STATIC / "viewer.html")
 
 
+async def favicon(request: Request) -> FileResponse:
+    return FileResponse(STATIC / "favicon.svg")
+
+
 # ------------------------------------------------------------------ api ----
 
 async def hosts(request: Request) -> JSONResponse:
@@ -389,6 +393,7 @@ async def _ensure_loop() -> None:
 routes = [
     Route("/", index),
     Route("/view", view),
+    Route("/favicon.svg", favicon),
     Route("/api/hosts", hosts),
     Route("/api/services", services),
     Route("/api/ls", ls),

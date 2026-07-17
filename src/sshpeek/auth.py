@@ -29,6 +29,7 @@ COOKIE_MAX_AGE = 30 * 24 * 3600
 
 LOGIN_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>sshpeek · sign in</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
   body {{ display: flex; align-items: center; justify-content: center; height: 100vh;
          margin: 0; background: #F2F3EF; color: #23282D;
@@ -95,6 +96,8 @@ class AuthGate:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket") or not self.secret:
+            return await self.app(scope, receive, send)
+        if scope["path"] == "/favicon.svg":  # public: shown on the login page
             return await self.app(scope, receive, send)
         if matches(self.secret, cookie_secret(scope)):
             return await self.app(scope, receive, send)
